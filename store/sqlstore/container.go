@@ -11,7 +11,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	mathRand "math/rand/v2"
 
 	"github.com/google/uuid"
 	"go.mau.fi/util/dbutil"
@@ -172,13 +171,50 @@ func (c *Container) GetAllDevices(ctx context.Context) ([]*store.Device, error) 
 // GetFirstDevice is a convenience method for getting the first device in the store. If there are
 // no devices, then a new device will be created. You should only use this if you don't want to
 // have multiple sessions simultaneously.
-func (c *Container) GetFirstDevice(ctx context.Context) (*store.Device, error) {
-	devices, err := c.GetAllDevices(ctx)
+// func (c *Container) GetFirstDevice(ctx context.Context) (*store.Device, error) {
+// 	devices, err := c.GetAllDevices(ctx)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+// 	if len(devices) == 0 {
+// 		return c.NewDevice(), nil
+// 	} else {
+// 		return devices[0], nil
+// 	}
+// }
+
+// GetAllDevices finds all the devices in the database.
+func (c *Container) GetAllUserDevices(ctx context.Context, owner string) ([]*store.Device, error) {
+	res, err := c.db.Query(ctx, `SELECT jid, lid, registration_id, noise_key, identity_key,
+       														signed_pre_key, signed_pre_key_id, signed_pre_key_sig,
+       														adv_key, adv_details, adv_account_sig, adv_account_sig_key, adv_device_sig,
+       														platform, business_name, push_name, facebook_uuid
+																FROM whatsmeow_device
+																WHERE registration_id = `+owner)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query sessions: %w", err)
+	}
+	sessions := make([]*store.Device, 0)
+	for res.Next() {
+		sess, scanErr := c.scanDevice(res)
+		if scanErr != nil {
+			return sessions, scanErr
+		}
+		sessions = append(sessions, sess)
+	}
+	return sessions, nil
+}
+
+// GetFirstDevice is a convenience method for getting the first device in the store. If there are
+// no devices, then a new device will be created. You should only use this if you don't want to
+// have multiple sessions simultaneously.
+func (c *Container) GetUserDevice(ctx context.Context, owner string) (*store.Device, error) {
+	devices, err := c.GetAllUserDevices(ctx, owner)
 	if err != nil {
 		return nil, err
 	}
 	if len(devices) == 0 {
-		return c.NewDevice(), nil
+		return c.NewDevice(owner), nil
 	} else {
 		return devices[0], nil
 	}
@@ -217,14 +253,15 @@ const (
 //
 // No data is actually stored before Save is called. However, the pairing process will automatically
 // call Save after a successful pairing, so you most likely don't need to call it yourself.
-func (c *Container) NewDevice() *store.Device {
+func (c *Container) NewDevice(owner string) *store.Device {
+	var regID uint32
+	fmt.Sscanf(owner, "%d", &regID)
 	device := &store.Device{
-		Log:       c.log,
-		Container: c,
-
+		Log:            c.log,
+		Container:      c,
 		NoiseKey:       keys.NewKeyPair(),
 		IdentityKey:    keys.NewKeyPair(),
-		RegistrationID: mathRand.Uint32(),
+		RegistrationID: regID,
 		AdvSecretKey:   random.Bytes(32),
 	}
 	device.SignedPreKey = device.IdentityKey.CreateSignedPreKey(1)
